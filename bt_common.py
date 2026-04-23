@@ -1,9 +1,14 @@
-import socket
-import struct
-import json
+import socket, struct, json, hashlib
 
 MCAST_GRP = '224.1.1.1'
 MCAST_PORT = 5007
+
+def get_hash(passkey, nonce):
+    return hashlib.sha256(f"{passkey}{nonce}".encode()).hexdigest()
+
+def crypt(text, key):
+    """Simple XOR to simulate encryption/decryption."""
+    return "".join(chr(ord(c) ^ ord(key[i % len(key)])) for i, c in enumerate(text))
 
 def send_msg(sender_id, msg_type, data):
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
@@ -17,4 +22,5 @@ def get_sock():
     sock.bind(('', MCAST_PORT))
     mreq = struct.pack("4sl", socket.inet_aton(MCAST_GRP), socket.INADDR_ANY)
     sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+    sock.settimeout(0.5)
     return sock

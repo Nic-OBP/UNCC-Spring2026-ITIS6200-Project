@@ -1,57 +1,112 @@
 import bt_common as bt
-import time, json, sys, threading
+import time, json, sys, threading, random
 
 class Peripheral:
     def __init__(self, mode="just_works"):
         self.id = "HEADPHONES_v1"
         self.mode = mode
-        self.passkey = [0] * 6
-        self.idx = 0
         self.bonded = False
-        self.stk = None
+        self.session_key = None
+        self.nonce = None
+        self.running = True
 
-    def input_loop(self):
-        print(f"--- PERIPHERAL READY ({self.mode}) ---")
-        print("Controls: [w] Increment Digit, [d] Next Digit/Confirm")
-        while not self.bonded:
-            cmd = sys.stdin.read(1)
-            if cmd == 'w':
-                self.passkey[self.idx] = (self.passkey[self.idx] + 1) % 10
-                print(f"Entering Passkey: {self.passkey}")
-            elif cmd == 'd':
-                if self.idx < 5:
-                    self.idx += 1
-                    print(f"Moved to digit {self.idx + 1}")
-                else:
-                    self.stk = "".join(map(str, self.passkey))
-                    print(f"STK Generated: {self.stk}. Sending for verification...")
-                    bt.send_msg(self.id, "STK_VERIFY", {"stk": self.stk})
+    def send_heartbeat(self):
+        count = 0
+        while self.running and count < 10:
+            if self.bonded:
+                raw_data = f"Heartrate: {random.randint(70, 80)} BPM"
+                encrypted = bt.crypt(raw_data, self.session_key)
+                print(f"  [TX {count+1}/10] Sending Heartbeat...")
+                bt.send_msg(self.id, "HEARTBEAT", {"gatt": "HIF", "payload": encrypted})
+                count += 1
+            time.sleep(2)
+        self.running = False # Stop the peripheral after 10 messages
 
     def run(self):
         sock = bt.get_sock()
-        threading.Thread(target=self.input_loop, daemon=True).start()
+        threading.Thread(target=self.send_heartbeat, daemon=True).start()
+        print(f"--- PERIPHERAL ({self.mode}) ---")
         
-        while True:
-            if not self.bonded:
-                bt.send_msg(self.id, "ADVERTISE", {"mode": self.mode, "gatt": "HIF"})
-                time.sleep(2)
-            
-            try:
-                sock.settimeout(1)
-                data, _ = sock.recvfrom(1024)
-                msg = json.loads(data.decode())
-                if msg['type'] == "PAIR_REQ" and msg['data']['target'] == self.id:
-                    if self.mode == "just_works":
-                        print("Just Works Pairing Success!")
+        try:
+            while self.running:
+                if not self.bonded:
+                    bt.send_msg(self.id, "ADVERTISE", {"mode": self.mode})
+                    time.sleep(2)
+                
+                try:
+                    data, _ = sock.recvfrom(1024)
+                    msg = json.loads(data.decode())
+                    
+                    # Handle Attacker Reset
+                    if msg['type'] == "RESET":
+                        if self.session_key:
+                        # Attempt to decrypt the reset command
+                            try:
+                                cmd = bt.crypt(msg['data']['payload'], self.session_key)
+                                if cmd == "SHUTDOWN":
+                                    print("\n[!] AUTHENTICATED DISCONNECT RECEIVED. Shutting down...")
+                                    self.running = False
+                                    break
+                                else:
+                                    print(f"\n[?] Malformed Reset Attempt: Decrypted as '{cmd[:10]}...' (Ignored)")
+                            except:
+                                print("\n[?] Reset packet corrupted or unreadable.")
+                        else:
+                            print("\n[!] Unauthenticated RESET ignored (No session key).")
+
+                    if msg['type'] == "PAIR_REQ" and msg['data']['target'] == self.id:
+                        self.nonce = msg['data']['nonce']
+                        if self.mode == "just_works":
+                            self.session_key = bt.get_hash("000000", self.nonce)
+                            self.bonded = True
+                            print("[CONN] Paired with Central.")
+                        else:
+                            self.do_passkey_entry()
+                            
+                    if msg['type'] == "AUTH_OK" and msg['data']['target'] == self.id:
                         self.bonded = True
-                    else:
-                        print("Waiting for manual Passkey entry...")
-                elif msg['type'] == "AUTH_OK" and self.bonded == False:
-                    print("Bonding Confirmed via Passkey!")
-                    self.bonded = True
-            except: continue
+                        print("[CONN] Secure Bond Confirmed.")
+                    
+                    if msg['type'] == "AUTH_FAILED" and msg['data']['target'] == self.id:
+                        print("\n[!] Pairing rejected by Central. Resetting state...")
+                        self.nonce = None
+                        self.bonded = False
+                except: continue
+        except KeyboardInterrupt: pass
+        print("Peripheral Offline.")
+
+    def do_passkey_entry(self):
+        print("\n--- PASSKEY ENTRY MODE (2-Button Simulation) ---")
+        print("Controls: 'w' to increment digit, 'd' to confirm and move next.")
+        
+        passkey = [0] * 6
+        for i in range(6):
+            confirmed = False
+            while not confirmed:
+                # Show the "Internal" state of the peripheral
+                display = ["*"] * 6
+                for j in range(i): display[j] = str(passkey[j])
+                display[i] = f"[{passkey[i]}]"
+                print(f"\rCurrent Buffer: {' '.join(display)} | Input (w/d): ", end="", flush=True)
+                
+                cmds = input().lower()
+                for char in cmds:
+                    if char == 'w':
+                        passkey[i] = (passkey[i] + 1) % 10
+                    elif char == 'd':
+                        confirmed = True
+                        break # Move to next digit
+                
+                # Update the display again if multiple 'w's were pressed
+                if not confirmed:
+                    display[i] = f"[{passkey[i]}]"
+                    print(f"\rCurrent Buffer: {' '.join(display)} | Input (w/d): ", end="", flush=True)
+
+        final_code = "".join(map(str, passkey))
+        print(f"\n\n[*] Final Passkey Entered: {final_code}")
+        self.session_key = bt.get_hash(final_code, self.nonce)
+        bt.send_msg(self.id, "STK_VERIFY", {"hash": self.session_key})
 
 if __name__ == "__main__":
     mode = sys.argv[1] if len(sys.argv) > 1 else "just_works"
-    p = Peripheral(mode)
-    p.run()
+    Peripheral(mode).run()
