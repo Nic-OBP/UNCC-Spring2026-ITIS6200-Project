@@ -20,7 +20,7 @@ class Peripheral:
                 bt.send_msg(self.id, "HEARTBEAT", {"gatt": "HIF", "payload": encrypted})
                 count += 1
             time.sleep(2)
-        self.running = False # Stop the peripheral after 10 messages
+        self.running = False
 
     def run(self):
         sock = bt.get_sock()
@@ -37,10 +37,8 @@ class Peripheral:
                     data, _ = sock.recvfrom(1024)
                     msg = json.loads(data.decode())
                     
-                    # Handle Attacker Reset
                     if msg['type'] == "RESET":
                         if self.session_key:
-                        # Attempt to decrypt the reset command
                             try:
                                 cmd = bt.crypt(msg['data']['payload'], self.session_key)
                                 if cmd == "SHUTDOWN":
@@ -83,7 +81,6 @@ class Peripheral:
         for i in range(6):
             confirmed = False
             while not confirmed:
-                # Show the "Internal" state of the peripheral
                 display = ["*"] * 6
                 for j in range(i): display[j] = str(passkey[j])
                 display[i] = f"[{passkey[i]}]"
@@ -95,9 +92,8 @@ class Peripheral:
                         passkey[i] = (passkey[i] + 1) % 10
                     elif char == 'd':
                         confirmed = True
-                        break # Move to next digit
+                        break
                 
-                # Update the display again if multiple 'w's were pressed
                 if not confirmed:
                     display[i] = f"[{passkey[i]}]"
                     print(f"\rCurrent Buffer: {' '.join(display)} | Input (w/d): ", end="", flush=True)

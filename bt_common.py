@@ -7,7 +7,7 @@ def get_hash(passkey, nonce):
     return hashlib.sha256(f"{passkey}{nonce}".encode()).hexdigest()
 
 def crypt(text, key):
-    """Simple XOR to simulate encryption/decryption."""
+    """Simple XOR to simulate encryption/decryption. Actual encryption uses Elliptic Curve Diffie Hellman"""
     return "".join(chr(ord(c) ^ ord(key[i % len(key)])) for i, c in enumerate(text))
 
 def send_msg(sender_id, msg_type, data):
